@@ -1,0 +1,31 @@
+const uuid = () => crypto.randomUUID();
+export const themes = {
+ papaya:{name:'Papaya Performance',bg:'#0B0D10',elev:'#14171B',card:'#1C2025',border:'#343B43',text:'#F5F1E8',muted:'#9AA3AE',accent:'#FF8000',accent2:'#FFA13D',board:'#182130',tile:'#253044',good:'#48C98A',bad:'#FF5B63'},
+ midnight:{name:'Midnight Royale',bg:'#0A1222',elev:'#111D32',card:'#192740',border:'#344460',text:'#F7F0DF',muted:'#A0ADC4',accent:'#E2BD79',accent2:'#F5D99C',board:'#112950',tile:'#1D4276',good:'#55CEAA',bad:'#FD737B'},
+ carbon:{name:'Carbon Edition',bg:'#0D0F11',elev:'#16191C',card:'#22262A',border:'#45494E',text:'#FFFFFF',muted:'#A4A7AA',accent:'#E7E8EB',accent2:'#FFFFFF',board:'#1B1C20',tile:'#36383D',good:'#76C1A3',bad:'#DE7E87'},
+ circuit:{name:'Electric Circuit',bg:'#100C1F',elev:'#1D1533',card:'#271E46',border:'#494167',text:'#F4F3FF',muted:'#AEA9C8',accent:'#8B79FF',accent2:'#67DCEB',board:'#1D1A46',tile:'#35306F',good:'#50DDBB',bad:'#FF698B'},
+ heritage:{name:'Heritage Game Show',bg:'#080F2F',elev:'#111B44',card:'#192653',border:'#36477A',text:'#FFF7E5',muted:'#B0B9D3',accent:'#E6BC59',accent2:'#FFE4A8',board:'#102F8A',tile:'#234DA6',good:'#69D4A8',bad:'#FF6B80'},
+ arctic:{name:'Arctic Studio',bg:'#F2F4F6',elev:'#FFFFFF',card:'#FFFFFF',border:'#CBD1DB',text:'#111827',muted:'#596575',accent:'#D96819',accent2:'#A9450B',board:'#D6E4F4',tile:'#EEF4FC',good:'#147851',bad:'#BE253A'},
+ emerald:{name:'Emerald Society',bg:'#091512',elev:'#11211C',card:'#1B3029',border:'#355246',text:'#F4F2E8',muted:'#ACC0B5',accent:'#53C795',accent2:'#A1E7BE',board:'#16392B',tile:'#215442',good:'#77D7A6',bad:'#FB7D82'},
+ crimson:{name:'Crimson Theatre',bg:'#1D0B13',elev:'#2B151E',card:'#3A1C2A',border:'#634051',text:'#F9EEE8',muted:'#C5B1B8',accent:'#E5AC88',accent2:'#F2D0A6',board:'#491C30',tile:'#6B2B45',good:'#71CFA0',bad:'#FF6D88'}
+};
+const BANK = [
+ ['World Atlas', [['Which country is home to the city of Kyoto?','Japan'],['Which ocean is the largest on Earth?','Pacific Ocean'],['What is the capital of Canada?','Ottawa'],['What mountain range separates much of Europe and Asia?','The Ural Mountains'],['Which country has the most time zones when overseas territories are counted?','France']]],
+ ['On Screen', [['Which film features the character Jack Dawson?','Titanic'],['Who directed the movie Inception?','Christopher Nolan'],['What fictional nation is Black Panther associated with?','Wakanda'],['Which 1993 dinosaur adventure film was directed by Steven Spielberg?','Jurassic Park'],['Who voices Woody in the original English Toy Story films?','Tom Hanks']]],
+ ['The Beautiful Game', [['How many players start on the pitch for one soccer team?','11'],['What is the name of the football competition for European national teams?','UEFA European Championship'],['Which country hosted the 2014 FIFA World Cup?','Brazil'],['Which club plays home games at Anfield?','Liverpool FC'],['Which nation won the first FIFA World Cup in 1930?','Uruguay']]],
+ ['Science Lab', [['What chemical symbol represents gold?','Au'],['Which planet is known as the Red Planet?','Mars'],['What is the chemical formula for water?','H2O'],['Which subatomic particle carries a negative electric charge?','Electron'],['What is the SI unit of electrical resistance?','Ohm']]],
+ ['Pop Culture', [['What is the name of the cowboy in Toy Story?','Woody'],['Which video game franchise features Princess Zelda?','The Legend of Zelda'],['Which singer released the album 1989?','Taylor Swift'],['What is the fictional school attended by Harry Potter?','Hogwarts'],['Which animated yellow family lives in Springfield?','The Simpsons']]],
+ ['History & More', [['Which ancient civilization built the pyramids at Giza?','Ancient Egyptians'],['Which year did humans first land on the Moon?','1969'],['Who painted the Mona Lisa?','Leonardo da Vinci'],['Which historic trade route linked East Asia and the Mediterranean?','The Silk Road'],['Which document, signed in 1215, limited the English monarchy’s power?','Magna Carta']]]
+];
+export function makeQuestion(prompt='',answer='',value=200){return {id:uuid(),prompt,answer,value,timeLimit:30,explanation:'',imageUrl:'',difficulty:'medium'};}
+export function sampleGame({name='The Knowledge Grand Prix', theme='papaya'}={}) {
+ return {title:name,description:'Six categories. Five clues each. One winner.',rounds:[{id:uuid(),title:'ROUND 01 / THE GRID',categories:BANK.map(([cat,items])=>({id:uuid(),name:cat,questions:items.map(([q,a],i)=>makeQuestion(q,a,(i+1)*200))}))}],final:{category:'The Final Stretch',question:'Which element has the atomic number 6?',answer:'Carbon',timeLimit:45},settings:{theme,timeLimit:30,negativePoints:true,allowLateJoin:true,buzzerMode:'manual',finalEnabled:true,animation:'balanced',sound:true,volume:0.45,teams:[{id:'t1',name:'ORANGE TEAM',color:'#FF8000'},{id:'t2',name:'BLUE TEAM',color:'#66A7FF'},{id:'t3',name:'MINT TEAM',color:'#58D4A1'}]}};
+}
+const remap = (game,title,theme) => ({...game,title,settings:{...game.settings,theme},rounds:game.rounds.map(r=>({...r,id:uuid(),categories:r.categories.map(c=>({...c,id:uuid(),questions:c.questions.map(q=>({...q,id:uuid()}))}))}))});
+export function templates(){const base=sampleGame();return [
+ {id:'classic',title:'The Knowledge Grand Prix',subtitle:'A balanced six-category classic',theme:'papaya',difficulty:'Mixed',game:remap(base,'The Knowledge Grand Prix','papaya')},
+ {id:'classroom',title:'The Classroom Challenge',subtitle:'A ready-to-edit board for lessons',theme:'midnight',difficulty:'Mixed',game:remap(base,'The Classroom Challenge','midnight')},
+ {id:'film',title:'The Film Society',subtitle:'Film-night starter board to customize',theme:'crimson',difficulty:'Mixed',game:remap(base,'The Film Society','crimson')},
+ {id:'motorsport',title:'The Paddock Quiz',subtitle:'A motorsport-styled trivia starter',theme:'circuit',difficulty:'Mixed',game:remap(base,'The Paddock Quiz','circuit')}
+];}
+export function blankGame(){return {title:'Untitled Grand Prix',description:'A new quiz experience',rounds:[{id:uuid(),title:'ROUND 01',categories:[{id:uuid(),name:'NEW CATEGORY',questions:[1,2,3,4,5].map(i=>makeQuestion('','',i*200))}]}],final:{category:'Final Question',question:'',answer:'',timeLimit:45},settings:sampleGame().settings};}

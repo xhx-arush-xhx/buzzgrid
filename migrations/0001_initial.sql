@@ -1,0 +1,15 @@
+PRAGMA foreign_keys=ON;
+CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL, pass_hash TEXT NOT NULL, preferences TEXT NOT NULL DEFAULT '{}', created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS auth_sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, csrf TEXT NOT NULL, expires INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS auth_sessions_expires ON auth_sessions(expires);
+CREATE TABLE IF NOT EXISTS games (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id), data TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS games_owner ON games(owner_id,updated_at);
+CREATE TABLE IF NOT EXISTS live_sessions (code TEXT PRIMARY KEY, owner_id TEXT, game_id TEXT, demo_hash TEXT, state TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS participants (id TEXT PRIMARY KEY, code TEXT NOT NULL REFERENCES live_sessions(code), token_hash TEXT NOT NULL, name TEXT NOT NULL COLLATE NOCASE, team_id TEXT NOT NULL, joined_at INTEGER NOT NULL, last_seen INTEGER NOT NULL, UNIQUE(code, name));
+CREATE INDEX IF NOT EXISTS participants_code ON participants(code);
+CREATE INDEX IF NOT EXISTS participants_token ON participants(code,token_hash);
+CREATE TABLE IF NOT EXISTS actions (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT NOT NULL REFERENCES live_sessions(code), action TEXT NOT NULL, payload TEXT NOT NULL, timestamp INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS actions_code ON actions(code,id);
+CREATE TABLE IF NOT EXISTS command_ids (code TEXT NOT NULL, key TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(code,key));
+CREATE TABLE IF NOT EXISTS theme_presets (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id), name TEXT NOT NULL, tokens TEXT NOT NULL, created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS rate_windows (identity TEXT PRIMARY KEY, start INTEGER NOT NULL, hits INTEGER NOT NULL);
