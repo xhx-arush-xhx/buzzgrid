@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "gridline-studio-cloud",
+  "main": "src/worker.mjs",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "assets": {
+    "directory": "./web",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "d1_databases": [{
+  "binding": "DB",
+  "database_name": "gridline-cloud",
+  "database_id": "260a19b2-3610-4c4b-9142-74e580ca5764",
+  "migrations_dir": "migrations"
+}],
+  "durable_objects": {
+    "bindings": [{"name": "ROOMS", "class_name": "Room"}]
+  },
+  "migrations": [{"tag": "v1", "new_sqlite_classes": ["Room"]}]
+}
