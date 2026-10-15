@@ -1,7 +1,9 @@
 {
-  "name":"gridline-cloudflare","private":true,"version":"1.0.0","type":"module",
-  "description":"GRIDLINE Studio adapted for Cloudflare Workers, D1 and Durable Object WebSockets",
-  "scripts":{"dev":"wrangler dev","deploy":"wrangler deploy","db:local":"wrangler d1 migrations apply gridline-cloud --local","db:remote":"wrangler d1 migrations apply gridline-cloud --remote","test":"node --test tests/*.test.mjs","check":"node --check src/worker.mjs && node --check src/core.mjs && node --check src/room.mjs && node --check src/engine.mjs && node --check src/templates.mjs && node --check web/app.js && npm test"},
-  "devDependencies":{"wrangler":"^4.0.0"},
-  "engines":{"node":">=20.0.0"}
+  "name": "football-auction-royale-online",
+  "version": "0.9.1",
+  "private": true,
+  "type": "module",
+  "description": "Football Auction Royale - authoritative Node WebSocket game server for Railway",
+  "scripts": {"start": "node bootstrap.mjs"},
+  "engines": {"node": ">=22"}
 }
