@@ -180,3 +180,14 @@ Some ambitions in the original 60-section master prompt remain unimplemented in 
 - Durable Object WebSockets: https://developers.cloudflare.com/durable-objects/best-practices/websockets/
 - Worker assets: https://developers.cloudflare.com/workers/static-assets/binding/
 - D1 exports: https://developers.cloudflare.com/d1/best-practices/import-export-data/
+
+
+## Admission update prepared 29 October 2026
+
+The host selects 1–60 participants (default 8) and admits or declines one waiting contestant at a time. Join reservations and participant records now commit in a single D1 batch transaction. Failed inserts cannot leave an invisible pending contestant, and racing admit/decline actions cannot remove an approved player. Command receipts and action logs commit with state changes.
+
+The cumulative UI update also keeps answer reveal under host control, supports buzzer reset/reopen, and shows approval status. Run `npm run check`; 36 tests pass on Node 24, including concurrent joins, admit/decline races, retry idempotency and rollback after a database failure. The API suite uses SQLite and a mocked authentication service. A separate real local workerd/D1 smoke check also passed concurrent joining, atomic decline, idempotent retry, readmission and approval. Local runtime validation does not establish deployed authentication compatibility.
+
+Deployment is pending. `wrangler.jsonc` contains a placeholder D1 database ID, and current `src/room.mjs` still uses the historical 110,000-iteration password format. Reconcile the existing deployed checkout and its reported login fix before deployment; do not overwrite its configuration or stored password hashes. Verify sign-in and registration, then a new session with a host and two separate clients. Confirm that only one waits, rejected clients cannot play, caps hold, and an existing host account still signs in. No production rooms or database migrations were changed.
+
+D1 transactional batching: https://developers.cloudflare.com/d1/worker-api/d1-database/#batch
