@@ -3,7 +3,7 @@
  * No Node, long-lived process, or paid API is required.
  */
 import {templates,blankGame,sampleGame,themes} from './templates.mjs';
-import {GameError,createState,applyCommand,registerBuzz,submitWager,submitFinalAnswer,publicState,standings} from './engine.mjs';
+import {GameError,createState,applyCommand,reserveJoin,registerBuzz,submitWager,submitFinalAnswer,publicState,standings} from './engine.mjs';
 
 const now=()=>Date.now(), uid=()=>crypto.randomUUID();
 const fail=(message,status=400)=>{throw new GameError(message,status);};
@@ -43,15 +43,21 @@ async function createSession(env,game,ownerId=null,gameId=null,demoHash=null){co
 function roomStub(env,code){return env.ROOMS.get(env.ROOMS.idFromName(code));}
 async function publish(env,code,revision){try{await roomStub(env,code).fetch(new Request('https://room.internal/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision})}));}catch(e){console.warn('WS notification failed; saved state is unaffected',e);}}
 /** Compare-and-swap on D1 revision resolves concurrent buzzes. Other writers must retry after conflict. */
-async function mutate(env,code,action,payload,fn,commandId=null){
+async function mutate(env,code,action,payload,fn,commandId=null,effects=[]){
  for(let attempt=0;attempt<10;attempt++){
   if(commandId&&await dbGet(env,'SELECT key FROM command_ids WHERE code=? AND key=?',code,commandId))return snapshot(env,code,true);
   const s=await getSession(env,code);if(!s)fail('Session not found',404);
-  const next=fn(s.state);
-  const result=await dbRun(env,'UPDATE live_sessions SET state=?,revision=revision+1,updated_at=? WHERE code=? AND revision=?',JSON.stringify(next),now(),code,s.revision);
+  const next=fn(s.state), mutationId=uid();next.mutationId=mutationId;
+  // D1 batch is transactional: the state, participant row and command receipt commit together.
+  // Every side effect is conditional on this writer winning the revision compare-and-swap.
+  const guard="EXISTS (SELECT 1 FROM live_sessions WHERE code=? AND revision=? AND json_extract(state,'$.mutationId')=?)";
+  const guardArgs=[code,s.revision+1,mutationId];
+  const statements=[env.DB.prepare('UPDATE live_sessions SET state=?,revision=revision+1,updated_at=? WHERE code=? AND revision=? AND NOT EXISTS (SELECT 1 FROM command_ids WHERE code=? AND key=?)').bind(JSON.stringify(next),now(),code,s.revision,code,commandId)];
+  for(const effect of effects)statements.push(env.DB.prepare(effect.sql+guard).bind(...effect.params,...guardArgs));
+  if(commandId)statements.push(env.DB.prepare('INSERT INTO command_ids(code,key,created_at) SELECT ?,?,? WHERE '+guard).bind(code,commandId,now(),...guardArgs));
+  statements.push(env.DB.prepare('INSERT INTO actions(code,action,payload,timestamp) SELECT ?,?,?,? WHERE '+guard).bind(code,action,JSON.stringify(payload||{}),now(),...guardArgs));
+  const [result]=await env.DB.batch(statements);
   if(result.meta.changes!==1)continue;
-  if(commandId)await dbRun(env,'INSERT OR IGNORE INTO command_ids(code,key,created_at) VALUES(?,?,?)',code,commandId,now());
-  await dbRun(env,'INSERT INTO actions(code,action,payload,timestamp) VALUES(?,?,?,?)',code,action,JSON.stringify(payload||{}),now());
   await publish(env,code,s.revision+1);
   return snapshot(env,code,true);
  }
@@ -106,20 +112,34 @@ async function handle(request,env){
   }
   if(tail==='join'&&method==='POST'){
    await rate(env,request,'join',40,60000);const b=await readBody(request),name=String(b.name||'').trim(),teamId=String(b.teamId||'');
-   if(s.state.phase==='results'||(!s.state.game.settings.allowLateJoin&&!['lobby','board'].includes(s.state.phase)))fail('This session is closed');
    if(!name||name.length>28)fail('Enter a name up to 28 characters');if(!s.state.teams.some(t=>t.id===teamId))fail('Select a valid team');
-   if((await people(env,code)).length>=120)fail('Session player limit reached');
-   const id=uid(),token=secureRandom();try{await dbRun(env,'INSERT INTO participants(id,code,token_hash,name,team_id,joined_at,last_seen) VALUES(?,?,?,?,?,?,?)',id,code,await sha256(token),name,teamId,now(),now());}catch{fail('Name already in use',409);}
-   await publish(env,code,s.revision);return response({id,token,name,teamId},201);
+   const id=uid(),token=secureRandom();
+   const already=await people(env,code);
+   try{
+    await mutate(env,code,'join-pending',{playerId:id},st=>reserveJoin(st,id,already.length),null,[{
+     sql:'INSERT INTO participants(id,code,token_hash,name,team_id,joined_at,last_seen) SELECT ?,?,?,?,?,?,? WHERE ',
+     params:[id,code,await sha256(token),name,teamId,now(),now()]
+    }]);
+   }catch(error){
+    if(String(error).toLowerCase().includes('unique'))fail('Name already in use',409);
+    throw error;
+   }
+   return response({id,token,name,teamId},201);
   }
   if(tail==='heartbeat'&&method==='POST'){const p=await playerOf(request,env,code);await dbRun(env,'UPDATE participants SET last_seen=? WHERE id=?',now(),p.id);return response({ok:true});}
   if(tail==='buzz'&&method==='POST'){await rate(env,request,'buzz',70,60000);const p=await playerOf(request,env,code);await dbRun(env,'UPDATE participants SET last_seen=? WHERE id=?',now(),p.id);const result=await mutate(env,code,'buzz',{playerId:p.id},st=>registerBuzz(st,p.id));return response({accepted:true,revision:result.revision});}
-  if(tail==='wager'&&method==='POST'){const p=await playerOf(request,env,code),b=await readBody(request);const result=await mutate(env,code,'wager',{teamId:p.team_id},st=>submitWager(st,p.team_id,Number(b.wager)));return response({submitted:true,revision:result.revision});}
-  if(tail==='answer'&&method==='POST'){const p=await playerOf(request,env,code),b=await readBody(request);const result=await mutate(env,code,'final-answer',{teamId:p.team_id},st=>submitFinalAnswer(st,p.team_id,b.answer));return response({submitted:true,revision:result.revision});}
+  if(tail==='wager'&&method==='POST'){const p=await playerOf(request,env,code),b=await readBody(request);if((s.state.pendingParticipants||[]).includes(p.id))fail('Awaiting host approval',403);const result=await mutate(env,code,'wager',{teamId:p.team_id},st=>submitWager(st,p.team_id,Number(b.wager)));return response({submitted:true,revision:result.revision});}
+  if(tail==='answer'&&method==='POST'){const p=await playerOf(request,env,code),b=await readBody(request);if((s.state.pendingParticipants||[]).includes(p.id))fail('Awaiting host approval',403);const result=await mutate(env,code,'final-answer',{teamId:p.team_id},st=>submitFinalAnswer(st,p.team_id,b.answer));return response({submitted:true,revision:result.revision});}
   if(tail==='command'&&method==='POST'){
    await hostAccess(request,env,s,true);const b=await readBody(request);
    if(typeof b.commandId!=='string'||!/^[-a-zA-Z0-9]{8,80}$/.test(b.commandId))fail('Missing unique commandId');
-   const result=await mutate(env,code,b.type,{type:b.type,teamId:b.teamId,questionId:b.questionId},st=>applyCommand(st,b),b.commandId);
+   if(b.type==='setMaxParticipants'){
+    if(!Number.isInteger(b.maxParticipants)||b.maxParticipants<1||b.maxParticipants>60)fail('Choose between 1 and 60 participants');
+    if(b.maxParticipants<(await people(env,code)).length)fail('The room already has more participants than that',409);
+   }
+   if(b.type==='approvePlayer'){const p=await dbGet(env,'SELECT id FROM participants WHERE code=? AND id=?',code,b.playerId);if(!p)fail('Unknown participant');}
+   const effects=b.type==='rejectPlayer'?[{sql:'DELETE FROM participants WHERE code=? AND id=? AND ',params:[code,b.playerId]}]:[];
+   const result=await mutate(env,code,b.type,{type:b.type,teamId:b.teamId,questionId:b.questionId,playerId:b.playerId,maxParticipants:b.maxParticipants},st=>applyCommand(st,b),b.commandId,effects);
    return response(result);
   }
   if(tail==='history'&&method==='GET'){await hostAccess(request,env,s);return response((await dbAll(env,'SELECT action,payload,timestamp FROM actions WHERE code=? ORDER BY id DESC LIMIT 300',code)).map(e=>({...e,payload:jsonParse(e.payload)})));}

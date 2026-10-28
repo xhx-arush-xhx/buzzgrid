@@ -6,7 +6,27 @@ export const questionsInRound = (s,index=s.roundIndex)=>s.game.rounds[index]?.ca
 export const currentQuestion = s => questionsInRound(s).find(q=>q.id===s.selectedId);
 export const available = s => questionsInRound(s).filter(q=>!s.usedIds.includes(q.id));
 export const remaining = (timer,at=Date.now())=>timer.running?Math.max(0,Math.ceil((timer.deadline-at)/1000)):Math.max(0,timer.remaining);
-export function createState(game){if(!game.rounds?.length) fail('Quiz requires at least one round'); const teams=(game.settings.teams||[]).map(t=>({...t})); if(!teams.length) fail('At least one team is required');return {game:structuredClone(game),phase:'lobby',roundIndex:0,selectedId:null,usedIds:[],buzzerOpen:false,buzzerWinner:null,lockedOut:[],answerRevealed:false,judgements:[],teams,scores:Object.fromEntries(teams.map(t=>[t.id,0])),timer:{duration:game.settings.timeLimit||30,remaining:game.settings.timeLimit||30,deadline:0,running:false},scoreEvents:[],wagers:{},finalAnswers:{},finalJudged:{},winningTeams:[],startedAt:null,finishedAt:null,activity:[]};}
+export function createState(game){if(!game.rounds?.length) fail('Quiz requires at least one round'); const teams=(game.settings.teams||[]).map(t=>({...t})); if(!teams.length) fail('At least one team is required');return {game:structuredClone(game),phase:'lobby',roundIndex:0,selectedId:null,usedIds:[],buzzerOpen:false,buzzerWinner:null,lockedOut:[],buzzerCycle:0,requireApproval:true,maxParticipants:8,participantCount:0,pendingParticipants:[],answerRevealed:false,judgements:[],teams,scores:Object.fromEntries(teams.map(t=>[t.id,0])),timer:{duration:game.settings.timeLimit||30,remaining:game.settings.timeLimit||30,deadline:0,running:false},scoreEvents:[],wagers:{},finalAnswers:{},finalJudged:{},winningTeams:[],startedAt:null,finishedAt:null,activity:[]};}
+/** One pending admission reservation per room. All join attempts serialize using D1 revision CAS. */
+export function reserveJoin(input, playerId, existingCount=0){
+ const s=structuredClone(input);
+ if(s.phase==='results'||(!s.game.settings.allowLateJoin&&!['lobby','board'].includes(s.phase)))throw new GameError('This session is closed',409);
+ if((s.pendingParticipants||[]).length)throw new GameError('Another contestant is waiting for host approval. Please try again shortly.',409);
+ const count=Math.max(Number(s.participantCount)||0,existingCount);
+ if(count>=(Number(s.maxParticipants)||8))throw new GameError('This room is full. The host has reached the participant limit.',409);
+ s.requireApproval=true;
+ s.pendingParticipants=[playerId];
+ s.participantCount=count+1;
+ audit(s,'join','A contestant requested entry');
+ return s;
+}
+export function cancelJoinReservation(input,playerId,existingCount=0){
+ const s=structuredClone(input);
+ if(!(s.pendingParticipants||[]).includes(playerId))return s;
+ s.pendingParticipants=s.pendingParticipants.filter(id=>id!==playerId);
+ s.participantCount=Math.max(existingCount,(Number(s.participantCount)||0)-1);
+ return s;
+}
 export function standings(s){const ranked=s.teams.map(t=>({...t,score:s.scores[t.id]||0})).sort((a,b)=>b.score-a.score);let last=null,rank=0;return ranked.map((t,i)=>{if(t.score!==last)rank=i+1;last=t.score;return {...t,rank};});}
 export function timerStart(t,at){if(remaining(t,at)<=0)fail('Timer has expired. Reset it first.');return {...t,deadline:at+t.remaining*1000,running:true};}
 export function timerPause(t,at){return {...t,remaining:remaining(t,at),deadline:0,running:false};}
@@ -17,23 +37,28 @@ export function applyCommand(input,cmd,at=Date.now()){
  const s=structuredClone(input);const {type}=cmd||{};
  if(!type||typeof type!=='string')fail('Missing command type');
  switch(type){
- case 'start':requirePhase(s,'lobby');s.phase='board';s.startedAt=at;audit(s,'start','Game is live');break;
+ case 'start':requirePhase(s,'lobby');if((s.pendingParticipants||[]).length)fail('Approve or reject the waiting contestant before starting');s.phase='board';s.startedAt=at;audit(s,'start','Game is live');break;
  case 'select':{
   requirePhase(s,'board');const q=questionsInRound(s).find(q=>q.id===cmd.questionId);if(!q)fail('Unknown question');if(s.usedIds.includes(q.id))fail('Question has already been played');if(!q.prompt?.trim()||!q.answer?.trim())fail('This question needs a prompt and an answer');
-  s.selectedId=q.id;s.phase='question';s.buzzerOpen=s.game.settings.buzzerMode==='auto';s.buzzerWinner=null;s.lockedOut=[];s.answerRevealed=false;s.judgements=[];const seconds=Math.max(5,Math.min(3600,q.timeLimit||s.game.settings.timeLimit||30));s.timer={duration:seconds,remaining:seconds,deadline:0,running:false};audit(s,'select',`Opened ${q.value}-point question`);break;
+  s.selectedId=q.id;s.phase='question';s.buzzerOpen=s.game.settings.buzzerMode==='auto';s.buzzerWinner=null;s.lockedOut=[];s.buzzerCycle=0;s.answerRevealed=false;s.judgements=[];const seconds=Math.max(5,Math.min(3600,q.timeLimit||s.game.settings.timeLimit||30));s.timer={duration:seconds,remaining:seconds,deadline:0,running:false};audit(s,'select',`Opened ${q.value}-point question`);break;
  }
  case 'startTimer':requirePhase(s,'question','final-question');if(s.timer.running)fail('Timer already running');s.timer=timerStart(s.timer,at);audit(s,'timer','Started clock');break;
  case 'pauseTimer':requirePhase(s,'question','final-question');if(!s.timer.running)fail('Timer is not running');s.timer=timerPause(s.timer,at);audit(s,'timer','Paused clock');break;
  case 'resetTimer':requirePhase(s,'question','final-question');s.timer={...s.timer,deadline:0,running:false,remaining:s.timer.duration};audit(s,'timer','Reset clock');break;
- case 'openBuzz':requirePhase(s,'question');if(s.answerRevealed)fail('Answer has been revealed');if(s.buzzerWinner)fail('A player is locked in');s.buzzerOpen=true;audit(s,'buzz','Buzzers opened');break;
- case 'closeBuzz':requirePhase(s,'question');s.buzzerOpen=false;audit(s,'buzz','Buzzers closed');break;
+ case 'openBuzz':requirePhase(s,'question');if(s.answerRevealed)fail('Answer has been revealed');if(s.buzzerWinner)fail('A player is locked in');s.buzzerOpen=true;s.buzzerCycle=(s.buzzerCycle||0)+1;audit(s,'buzz',s.buzzerCycle>1?'Buzzers reopened':'Buzzers opened');break;
+ case 'closeBuzz':requirePhase(s,'question');s.buzzerOpen=false;audit(s,'buzz','Buzzers locked by host');break;
+ case 'resetBuzz':requirePhase(s,'question');if(s.answerRevealed||s.judgements.some(j=>j.correct))fail('This question has already been settled');s.buzzerOpen=false;s.buzzerWinner=null;audit(s,'override','Host reset buzzer result');break;
+ case 'setApproval':requirePhase(s,'lobby','board');if(cmd.enabled!==true)fail('Sequential joining requires host approval');s.requireApproval=true;break;
+ case 'setMaxParticipants':{requirePhase(s,'lobby');const max=Number(cmd.maxParticipants);if(!Number.isInteger(max)||max<1||max>60)fail('Choose between 1 and 60 participants');if(max<(s.participantCount||0))fail('Limit cannot be smaller than the number who already joined');s.maxParticipants=max;audit(s,'join',`Participant limit set to ${max}`);break;}
+ case 'rejectPlayer':{requirePhase(s,'lobby','board','question');if(typeof cmd.playerId!=='string'||!(s.pendingParticipants||[]).includes(cmd.playerId))fail('Player is not waiting for approval');s.pendingParticipants=s.pendingParticipants.filter(id=>id!==cmd.playerId);s.participantCount=Math.max(0,(s.participantCount||1)-1);audit(s,'join','Host declined a join request');break;}
+ case 'approvePlayer':{requirePhase(s,'lobby','board','question');if(typeof cmd.playerId!=='string'||!(s.pendingParticipants||[]).includes(cmd.playerId))fail('Player is not pending approval');s.pendingParticipants=s.pendingParticipants.filter(id=>id!==cmd.playerId);audit(s,'join','Host approved a contestant');break;}
  case 'reveal':requirePhase(s,'question','final-judging');s.answerRevealed=true;s.buzzerOpen=false;s.timer=timerPause(s.timer,at);audit(s,'reveal','Answer revealed');break;
  case 'judge':{
-  requirePhase(s,'question');if(!s.selectedId)fail('No active question');if(s.answerRevealed&&s.judgements.some(j=>j.correct))fail('Question is already settled');
+  requirePhase(s,'question');if(!s.selectedId)fail('No active question');if(s.answerRevealed||s.judgements.some(j=>j.correct))fail('Question is already settled');
   const teamId=cmd.teamId||cmd.winnerTeamId;requireTeam(s,teamId);if(s.judgements.some(j=>j.teamId===teamId))fail('Team has already answered this question');
   const q=currentQuestion(s);const correct=cmd.correct===true;const delta=correct?q.value:(s.game.settings.negativePoints?-q.value:0);
   s.scores[teamId]+=delta;const ev={id:randomUUID(),at,kind:'answer',teamId,delta,correct,questionId:q.id,undone:false};s.scoreEvents.push(ev);s.judgements.push({teamId,correct});
-  if(correct){s.buzzerOpen=false;s.answerRevealed=true;s.timer=timerPause(s.timer,at);}else{if(s.buzzerWinner)s.lockedOut.push(s.buzzerWinner);s.buzzerWinner=null;s.buzzerOpen=false;}
+  if(correct){s.buzzerOpen=false;s.timer=timerPause(s.timer,at);}else{if(s.buzzerWinner)s.lockedOut.push(s.buzzerWinner);s.buzzerWinner=null;s.buzzerOpen=false;}
   audit(s,'score',`${s.teams.find(t=>t.id===teamId).name}: ${delta>=0?'+':''}${delta}`);break;
  }
  case 'complete':{
@@ -67,7 +92,7 @@ export function applyCommand(input,cmd,at=Date.now()){
  }
  return s;
 }
-export function registerBuzz(input,participantId){const s=structuredClone(input);requirePhase(s,'question');if(!s.buzzerOpen||s.answerRevealed||s.buzzerWinner)fail('Buzzers are not accepting responses');if(s.lockedOut.includes(participantId))fail('You are locked out for this question');s.buzzerWinner=participantId;s.buzzerOpen=false;audit(s,'buzz','First buzzer accepted');return s;}
+export function registerBuzz(input,participantId){const s=structuredClone(input);requirePhase(s,'question');if(!s.buzzerOpen||s.answerRevealed||s.buzzerWinner)fail('Buzzers are not accepting responses');if((s.pendingParticipants||[]).includes(participantId))fail('Awaiting host approval');if(s.lockedOut.includes(participantId))fail('You are locked out for this question');s.buzzerWinner=participantId;s.buzzerOpen=false;audit(s,'buzz','First buzzer accepted');return s;}
 export function submitWager(input,teamId,wager){const s=structuredClone(input);requirePhase(s,'final-wager');requireTeam(s,teamId);if(s.wagers[teamId]!==undefined)fail('Your team already submitted a wager');s.wagers[teamId]=validateWager(s.scores[teamId],wager);audit(s,'wager','Final wager submitted');return s;}
 export function submitFinalAnswer(input,teamId,answer){const s=structuredClone(input);requirePhase(s,'final-question');requireTeam(s,teamId);if(s.finalAnswers[teamId]!==undefined)fail('Your team already submitted an answer');if(typeof answer!=='string'||!answer.trim()||answer.length>500)fail('Answer must be 1–500 characters');s.finalAnswers[teamId]=answer.trim();audit(s,'answer','Final answer submitted');return s;}
-export function publicState(s,people,revision){const q=currentQuestion(s);const reveal=s.answerRevealed||s.phase==='results';return {revision,serverNow:Date.now(),phase:s.phase,code:s.code,gameTitle:s.game.title,description:s.game.description,theme:s.game.settings.theme,roundTitle:s.game.rounds[s.roundIndex]?.title,roundIndex:s.roundIndex,roundCount:s.game.rounds.length,categories:s.game.rounds[s.roundIndex]?.categories.map(c=>({id:c.id,name:c.name,questions:c.questions.map(q=>({id:q.id,value:q.value,available:!s.usedIds.includes(q.id)}))}))||[],usedCount:s.usedIds.length,totalCount:questionsInRound(s).length,question:q?{id:q.id,value:q.value,prompt:q.prompt,imageUrl:q.imageUrl||'',answer:reveal?q.answer:undefined,explanation:reveal?q.explanation:undefined}:null,teams:s.teams,scores:s.scores,standings:standings(s),buzzerOpen:s.buzzerOpen,buzzerWinner:s.buzzerWinner,lockedOut:s.lockedOut,answerRevealed:s.answerRevealed,timer:s.timer,players:people.map(p=>({id:p.id,name:p.name,teamId:p.team_id,online:Date.now()-p.last_seen<60000})),lastEvent:s.activity[0]||null,finalCategory:s.phase.startsWith('final')||s.phase==='results'?s.game.final.category:null,finalQuestion:['final-question','final-judging'].includes(s.phase)?s.game.final.question:null,finalAnswer:reveal&&s.phase==='final-judging'?s.game.final.answer:undefined,finalJudged:s.finalJudged,submittedWagers:Object.keys(s.wagers),submittedFinalAnswers:Object.keys(s.finalAnswers),winners:s.winningTeams,startedAt:s.startedAt,finishedAt:s.finishedAt};}
+export function publicState(s,people,revision){const q=currentQuestion(s);const reveal=s.answerRevealed||s.phase==='results';return {revision,serverNow:Date.now(),phase:s.phase,code:s.code,gameTitle:s.game.title,description:s.game.description,theme:s.game.settings.theme,roundTitle:s.game.rounds[s.roundIndex]?.title,roundIndex:s.roundIndex,roundCount:s.game.rounds.length,categories:s.game.rounds[s.roundIndex]?.categories.map(c=>({id:c.id,name:c.name,questions:c.questions.map(q=>({id:q.id,value:q.value,available:!s.usedIds.includes(q.id)}))}))||[],usedCount:s.usedIds.length,totalCount:questionsInRound(s).length,question:q?{id:q.id,value:q.value,prompt:q.prompt,category:s.game.rounds[s.roundIndex]?.categories.find(c=>c.questions.some(x=>x.id===q.id))?.name||'',imageUrl:q.imageUrl||'',answer:reveal?q.answer:undefined,explanation:reveal?q.explanation:undefined}:null,teams:s.teams,scores:s.scores,standings:standings(s),buzzerOpen:s.buzzerOpen,buzzerWinner:s.buzzerWinner,buzzerState:s.phase!=='question'?'WAITING':s.answerRevealed?'CLOSED':s.buzzerWinner?'BUZZED':s.buzzerOpen?((s.buzzerCycle||0)>1?'REOPENED':'OPEN'):(s.buzzerCycle?'LOCKED':'WAITING'),requireApproval:true,maxParticipants:Math.max(1,Number(s.maxParticipants)||8,people.length),participantCount:people.length,approvedCount:people.filter(p=>!(s.pendingParticipants||[]).includes(p.id)).length,joinBusy:(s.pendingParticipants||[]).length>0,joinFull:people.length>=(Number(s.maxParticipants)||8),buzzerCycle:s.buzzerCycle||0,lockedOut:s.lockedOut,answerRevealed:s.answerRevealed,correctJudged:s.judgements.some(j=>j.correct),timer:s.timer,players:people.map(p=>({id:p.id,name:p.name,teamId:p.team_id,online:Date.now()-p.last_seen<60000,approved:!(s.pendingParticipants||[]).includes(p.id)})),lastEvent:s.activity[0]||null,finalCategory:s.phase.startsWith('final')||s.phase==='results'?s.game.final.category:null,finalQuestion:['final-question','final-judging'].includes(s.phase)?s.game.final.question:null,finalAnswer:reveal&&s.phase==='final-judging'?s.game.final.answer:undefined,finalJudged:s.finalJudged,submittedWagers:Object.keys(s.wagers),submittedFinalAnswers:Object.keys(s.finalAnswers),winners:s.winningTeams,startedAt:s.startedAt,finishedAt:s.finishedAt};}

@@ -180,3 +180,16 @@ Some ambitions in the original 60-section master prompt remain unimplemented in 
 - Durable Object WebSockets: https://developers.cloudflare.com/durable-objects/best-practices/websockets/
 - Worker assets: https://developers.cloudflare.com/workers/static-assets/binding/
 - D1 exports: https://developers.cloudflare.com/d1/best-practices/import-export-data/
+
+
+## Admission update prepared 29 October 2026
+
+The host selects 1–60 participants (default 8) and admits or declines one waiting contestant at a time. Join reservations and participant records now commit in a single D1 batch transaction. Failed inserts cannot leave an invisible pending contestant, and racing admit/decline actions cannot remove an approved player. Command receipts and action logs commit with state changes.
+
+The cumulative UI update keeps answer reveal under host control, supports buzzer reset/reopen, and shows approval status. `npm run check` passes 37 tests on Node 24, including concurrent joins, admit/decline races, retries, database rollback and the actual Room authentication handler. A real local workerd/D1 smoke check also covers registration, login, incorrect-password rejection and the admission flow.
+
+The Cloudflare account and D1 identifiers were recovered from the original deployment setup and restored in `wrangler.jsonc`. The Room handler now uses the deployed 100,000-round PBKDF2 format; the older 110,000-round version exceeded the reported runtime limit. Malformed digest fields and unsupported iteration formats are rejected. No stored password hashes were rewritten. The local test confirms runtime compatibility; an existing production host account still needs a signed-in live check.
+
+Deployment remains pending because Wrangler is not authenticated. Use the existing Cloudflare account, export D1 before deployment, verify the target database identity, then deploy. Verify existing-account sign-in and a new isolated session with a host and two clients. Confirm that only one waits, rejected clients cannot play and caps hold. No production migrations or live room changes were performed by this review.
+
+D1 transactional batching: https://developers.cloudflare.com/d1/worker-api/d1-database/#batch
